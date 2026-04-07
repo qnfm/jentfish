@@ -78,10 +78,6 @@ func roundUpToBlock(n uint64, block uint64) uint64 {
 	return n
 }
 
-func splitUint128(v uint64) (lo, hi uint64) {
-	return v, 0
-}
-
 func worker(
 	id int,
 	f *os.File,
@@ -113,7 +109,8 @@ func worker(
 		}
 		buf = buf[:need]
 
-		ctrLo, ctrHi := splitUint128(j.blockIndex)
+		ctrLo := j.blockIndex
+		ctrHi := uint64(0)
 
 		if err := cipher.FillCounter(buf, ctrLo, ctrHi); err != nil {
 			select {
@@ -146,7 +143,7 @@ func worker(
 func main() {
 	var (
 		outPath   = flag.String("out", "out.bin", "output file path")
-		sizeStr   = flag.String("size", "1GiB", "output size")
+		sizeStr   = flag.String("size", "1GiB", "bytes to append")
 		bufBlocks = flag.Int("buf-blocks", 8192, "number of 128-byte blocks per job")
 		workers   = flag.Int("workers", runtime.NumCPU(), "number of worker goroutines")
 	)
@@ -181,15 +178,33 @@ func main() {
 	}
 	tweak := avxfish.ZeroTweak()
 
-	f, err := os.Create(*outPath)
+	f, err := os.OpenFile(*outPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "create output failed:", err)
+		fmt.Fprintln(os.Stderr, "open output failed:", err)
 		os.Exit(1)
 	}
 	defer f.Close()
 
-	if err := f.Truncate(int64(total)); err != nil {
-		fmt.Fprintln(os.Stderr, "truncate failed:", err)
+	fi, err := f.Stat()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "stat failed:", err)
+		os.Exit(1)
+	}
+
+	oldSize := uint64(fi.Size())
+	baseOffset := roundUpToBlock(oldSize, avxfish.BlockSize)
+	padding := baseOffset - oldSize
+	finalSize := baseOffset + total
+
+	if padding > 0 {
+		if err := f.Truncate(int64(baseOffset)); err != nil {
+			fmt.Fprintln(os.Stderr, "pad truncate failed:", err)
+			os.Exit(1)
+		}
+	}
+
+	if err := f.Truncate(int64(finalSize)); err != nil {
+		fmt.Fprintln(os.Stderr, "final truncate failed:", err)
 		os.Exit(1)
 	}
 
@@ -205,10 +220,13 @@ func main() {
 	}
 
 	start := time.Now()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
-	fmt.Fprintf(os.Stderr,
-		"size=%d gen_size=%d blocks=%d workers=%d buf_blocks=%d go=%s cpus=%d\n",
-		total, genTotal, totalBlocks, *workers, *bufBlocks, runtime.Version(), runtime.NumCPU(),
+	fmt.Fprintf(
+		os.Stderr,
+		"old_size=%d padded_base=%d padding=%d append=%d gen_append=%d workers=%d buf_blocks=%d go=%s cpus=%d\n",
+		oldSize, baseOffset, padding, total, genTotal, *workers, *bufBlocks, runtime.Version(), runtime.NumCPU(),
 	)
 
 	go func() {
@@ -221,17 +239,17 @@ func main() {
 				nblocks = remain
 			}
 
-			offset := blockIndex * avxfish.BlockSize
+			relativeOffset := blockIndex * avxfish.BlockSize
 			writeBytes := int(nblocks * avxfish.BlockSize)
 
-			if remainReal := total - offset; uint64(writeBytes) > remainReal {
+			if remainReal := total - relativeOffset; uint64(writeBytes) > remainReal {
 				writeBytes = int(remainReal)
 			}
 
 			j := job{
 				blockIndex:  blockIndex,
 				numBlocks:   nblocks,
-				writeOffset: int64(offset),
+				writeOffset: int64(baseOffset + relativeOffset),
 				writeBytes:  writeBytes,
 			}
 
@@ -252,9 +270,6 @@ func main() {
 		close(done)
 	}()
 
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case err := <-errCh:
@@ -268,14 +283,19 @@ func main() {
 			}
 			elapsed := time.Since(start).Seconds()
 			finalWritten := written.Load()
-			fmt.Fprintf(os.Stderr, "\rwritten=%d bytes total (%.2f MiB/s)\n",
-				finalWritten, float64(finalWritten)/MiB/elapsed)
+			fmt.Fprintf(
+				os.Stderr,
+				"\rappended=%d bytes total (%.2f MiB/s), final_size=%d\n",
+				finalWritten,
+				float64(finalWritten)/MiB/elapsed,
+				finalSize,
+			)
 			return
 
 		case <-ticker.C:
 			cur := written.Load()
 			mbps := float64(cur) / MiB / time.Since(start).Seconds()
-			fmt.Fprintf(os.Stderr, "\rwritten=%d bytes (%.2f MiB/s)", cur, mbps)
+			fmt.Fprintf(os.Stderr, "\rappended=%d bytes (%.2f MiB/s)", cur, mbps)
 		}
 	}
 }
