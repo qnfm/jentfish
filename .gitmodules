@@ -1,3 +1,4 @@
 [submodule "third_party/avxfish"]
 	path = third_party/avxfish
 	url = https://github.com/qnfm/avxfish.git
+	branch = int
