@@ -4,7 +4,7 @@ package avxfish
 
 /*
 #cgo CFLAGS: -O3 -mavx512f -mavx512vl -I${SRCDIR}/../../third_party/avxfish/include
-#cgo LDFLAGS: -L${SRCDIR}/../../third_party/avxfish/lib -lavxfish
+#cgo LDFLAGS: -L${SRCDIR}/../../third_party/avxfish/build -lavxfish -lstdc++
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
