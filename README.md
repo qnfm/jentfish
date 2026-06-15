@@ -27,8 +27,7 @@ cd jentfish
 
 # 2. Build the avxfish static library
 cd third_party/avxfish
-make
-ar rcs build/libavxfish.a build/avxfish.o
+make lib
 cd ../..
 
 # 3. Build jentfish
